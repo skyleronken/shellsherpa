@@ -4,7 +4,7 @@ A multi-client server for managing and mass tasking of simple socket reverse she
 Useful when doing mass exploitation
 
 ```
-usage: shellsherpa.py [-h] [--out OUT] port
+usage: shellsherpa.py [-h] [--out OUT] [--pem PEM] [--key KEY] port
 
 Manage shells
 
@@ -14,6 +14,8 @@ positional arguments:
 optional arguments:
   -h, --help  show this help message and exit
   --out OUT   Directory where to put output
+  --pem PEM   Required to make it SSL. Path of PEM file
+  --key KEY   Required to make it SSL. Path of key file.
 ```
 
 Standard example (no output directory) to listen on 4444:
