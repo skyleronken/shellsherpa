@@ -12,8 +12,7 @@ from prettytable import PrettyTable
 import shlex
 from pathlib import Path
 import os
-
-# * for all tags
+import copy
 
 default_tag = None
 autoruns = {}
@@ -25,52 +24,54 @@ def generate_uuid():
 def generate_timestamp():
     return '{:%Y%m%d%H%M%S}'.format(datetime.datetime.now())
 
-async def tcp_handler(reader, writer):
-    addr = writer.get_extra_info('peername')
-    print("Connection: {}".format(addr))
-    client = Client(addr[0])
-
-    global clients
-    clients.add_client(client)
-
-    while client.keep_alive:
-
-        if writer.transport._conn_lost:
-            clients.remove_client(client)
-            break
-
-        try:
-            message = client.send_queue.get(block=True, timeout=30)
-            writer.write(message.command.encode() + b'\x0a') # append linefeed
-            await writer.drain()
-
-            # this is necessary since we dont use EOF
-            data = b''
-            while True:
-                data += await reader.read(100)
-                reader.feed_eof()
-                if reader.at_eof():
-                    break
-
-            message.results = data.decode()
-            client.process_response(message)
-
-        except queue.Empty:
-            continue
-        except ConnectionResetError:
-            clients.remove_client(client)
-            return
-
-    writer.close()
-    reader.close()
-    await writer.wait_closed()
-    await reader.wait_closed()
-
 async def tcp_listener(port):
-    server = await asyncio.start_server(tcp_handler, '0.0.0.0', port)
+    loop = asyncio.get_running_loop()
+    server = await loop.create_server(RevShellProtocol, '0.0.0.0', port)
 
     async with server:
-        await server.serve_forever()
+        try:
+            await server.serve_forever()
+        except KeyboardInterrupt:
+            return
+
+class RevShellProtocol(asyncio.Protocol):
+    
+    def __init__(self):
+        self._buffer = bytearray()
+        super().__init__()
+
+    def connection_made(self, transport):
+        peername = transport.get_extra_info('peername')
+        print('Connection: {}'.format(peername))
+        client = Client(peername[0], self)
+        self.client = client
+        self.transport = transport
+
+        self.send_queue = queue.Queue()
+        self.cur_message = None
+
+        self.client.run_autos()
+
+    def connection_lost(self, err):
+        global clients
+        print("Disconnect: {}".format(self.client.addr))
+        clients.remove_client(self.client)
+
+    def data_received(self, data):
+        
+        self._buffer += data
+        if len(self._buffer) == 0:
+            return
+
+        self.cur_message.results = data.decode()
+        self.client.process_response(self.cur_message)
+
+        try:
+            next_message = self.send_queue.get_nowait()
+            self.cur_message = next_message
+            self.client.protocol.transport.write(self.cur_message.encoded_command())
+        except queue.Empty:
+            self.cur_message = None
 
 class Message():
 
@@ -85,6 +86,9 @@ class Message():
         
     def get_fullname(self):
         return self.job_name + "." + self.timestamp
+
+    def encoded_command(self):
+        return self.command.encode() + b'\x0a'
 
     def create_outfile(self, directory):
         Path(directory).mkdir(parents=True, exist_ok=True)
@@ -141,23 +145,27 @@ class ClientPool():
     def send_message_by_tag(self, tag, message):
 
         for c in self.find_clients_by_tag(tag):
-            c.send(message)
+            c.send(copy.copy(message))
 
 class Client:
 
-    def __init__(self, addr):
+    def __init__(self, addr, protocol):
         self.keep_alive = True
         self.uuid = generate_uuid()
         self.addr = addr
-        self.send_queue = queue.Queue()
+        self.protocol = protocol
 
         self.tags = [self.uuid, self.addr] # first tags are the uuid and ip
+
+        global clients
+        clients.add_client(self)
 
         # allows controller to set a global default tag for all new connections
         global default_tag
         if default_tag is not None:
             self.tags.append(default_tag)
 
+    def run_autos(self):
         global autoruns
         commands_to_run = []
         for tag in self.tags:
@@ -181,7 +189,12 @@ class Client:
             self.tags.remove(tag)
 
     def send(self, message):
-        self.send_queue.put(message)
+        if self.protocol.cur_message is not None:
+        #if not self.protocol.send_queue.empty():
+            self.protocol.send_queue.put(message)
+        else:
+            self.protocol.cur_message = message
+            self.protocol.transport.write(message.encoded_command())
 
     def client_directory(self, out_dir):
 
@@ -273,7 +286,7 @@ class ShellSherpa(cmd.Cmd):
             return
 
         tag = split_args[0].strip("\"'")
-        autoruns_file = split_args[1]
+        autoruns_file = split_args[1].strip("\"'")
         global autoruns
 
         if autoruns_file == "none":
@@ -282,8 +295,8 @@ class ShellSherpa(cmd.Cmd):
             try:
                 with open(autoruns_file, 'r') as f:
                     autoruns[tag] = f.readlines()
-            except:
-                print("[-] Issue with provided file")
+            except Exception as e:
+                print("[-] Issue with provided file: {}".format(e))
 
     def do_tags(self, arg):
         """
@@ -389,4 +402,7 @@ if __name__ == "__main__":
     global clients
     clients = ClientPool()
 
-    ShellSherpa(clients).cmdloop()
+    try:
+        ShellSherpa(clients).cmdloop()
+    except KeyboardInterrupt:
+        pass
