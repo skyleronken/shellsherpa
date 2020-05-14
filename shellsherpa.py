@@ -24,9 +24,15 @@ def generate_uuid():
 def generate_timestamp():
     return '{:%Y%m%d%H%M%S}'.format(datetime.datetime.now())
 
-async def tcp_listener(port):
+async def tcp_listener(port, ssl):
+    ssl_context = None
+    if ssl:
+        import ssl
+        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ssl_context.load_cert_chain(ssl[0], ssl[1])
+
     loop = asyncio.get_running_loop()
-    server = await loop.create_server(RevShellProtocol, '0.0.0.0', port)
+    server = await loop.create_server(RevShellProtocol, '0.0.0.0', port, ssl=ssl_context)
 
     async with server:
         try:
@@ -378,19 +384,24 @@ class ShellSherpa(cmd.Cmd):
         return True
 
 
-def start_server(port):
-    asyncio.run(tcp_listener(port))
+def start_server(port, ssl):
+    asyncio.run(tcp_listener(port, ssl))
 
 if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description='Manage shells')
     parser.add_argument('port', type=int, help='Port to listen on.')
     parser.add_argument('--out', type=str, help="Directory where to put output")
-    #parser.add_argument('--ssl', action="set_true", help="Make listener SSL.")
+    parser.add_argument('--pem', type=str, help="Required to make it SSL. Path of PEM file")
+    parser.add_argument('--key', type=str, help="Required to make it SSL. Path of key file.")
 
     args = parser.parse_args()
 
-    thread = threading.Thread(target = start_server, args = (args.port,))
+    ssl = None
+    if args.pem and args.key:
+        ssl = (args.pem, args.key)
+
+    thread = threading.Thread(target = start_server, args = (args.port,ssl,))
     thread.start()
 
     global out_dir
