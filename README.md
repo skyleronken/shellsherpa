@@ -3,3 +3,5 @@ A multi-client server for managing and mass tasking of simple socket reverse she
 
 
 Useful when doing mass exploitation
+
+WIP. Still has some bugs. 
